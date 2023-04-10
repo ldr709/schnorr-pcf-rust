@@ -1,17 +1,15 @@
 use arrayvec::ArrayVec;
 use core::mem::swap;
-use curve25519_dalek::constants::RISTRETTO_BASEPOINT_TABLE;
-use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use curve25519_dalek::scalar::Scalar;
 use rand::{CryptoRng, RngCore};
 use sha2::{Sha512, digest::Digest};
 
 use crate::dl_pcf::*;
 
-// TODO: Switch to edwards instead of ristretto.
-
 #[derive(Copy, Clone)]
-pub struct PubKey(CompressedRistretto);
+pub struct PubKey(CompressedEdwardsY);
 
 pub struct Signer {
     prover: Prover,
@@ -27,13 +25,13 @@ pub struct SignerState<'a> {
     signer: &'a Signer,
     msg: &'a [u8],
     r_i: Scalar,
-    R_i: RistrettoPoint,
+    R_i: EdwardsPoint,
 }
 
 #[allow(non_snake_case)]
 pub struct Signature {
     s: Scalar,
-    R: CompressedRistretto,
+    R: CompressedEdwardsY,
 }
 
 pub struct SignatureShare(Signature);
@@ -46,7 +44,7 @@ impl PubKey {
         hasher.update(self.0.as_bytes());
         hasher.update(msg);
         let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
-        let R_verify = RistrettoPoint::vartime_double_scalar_mul_basepoint(
+        let R_verify = EdwardsPoint::vartime_double_scalar_mul_basepoint(
             &-h, &self.0.decompress().unwrap(), &sig.s);
 
         R_verify.compress() == sig.R
@@ -80,7 +78,7 @@ impl<'a> SignerState<'a> {
 
 pub fn keygen<R: RngCore + CryptoRng>(rng: &mut R) -> (PubKey, [Signer; 2]) {
     let sk = [Scalar::random(rng), Scalar::random(rng)];
-    let pk = &(sk[0] + sk[1]) * RISTRETTO_BASEPOINT_TABLE;
+    let pk = &(sk[0] + sk[1]) * ED25519_BASEPOINT_TABLE;
     let pk = PubKey(pk.compress());
 
     let ell = 3072;

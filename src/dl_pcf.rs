@@ -1,5 +1,5 @@
-use curve25519_dalek::constants::{BASEPOINT_ORDER, RISTRETTO_BASEPOINT_TABLE};
-use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use curve25519_dalek::constants::{BASEPOINT_ORDER, ED25519_BASEPOINT_TABLE};
+use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use curve25519_dalek::scalar::Scalar;
 use num_traits::sign::Signed;
 use once_cell::sync::Lazy;
@@ -62,20 +62,21 @@ pub struct Verifier {
 pub struct Proof {
     u_hi: Integer,
     s: Integer, // Send (s^(-1)) instead of s, as it makes it easier for the verifier.
-    R: CompressedRistretto,
+    R: CompressedEdwardsY,
     hash_t_V: [u8; 32],
 }
 
 #[derive(Debug)]
 pub enum InvalidProof {
     InvalidCompressedPoint,
+    NotOnPrimeOrderSubgroup,
     OutOfRange,
     FailedConsistencyCheck,
 }
 
 impl Prover {
     #[allow(non_snake_case)]
-    pub fn prove(&self, msg: &[u8]) -> (Scalar, RistrettoPoint, Proof) {
+    pub fn prove(&self, msg: &[u8]) -> (Scalar, EdwardsPoint, Proof) {
         let mut hasher = Shake128::default();
         hasher.update(b"0");
         hasher.update(msg);
@@ -112,8 +113,8 @@ impl Prover {
         let t = mod_round(&secure_pow_mod_pm(&self.g, &self.g_inv, &v, &self.NV), &self.NV).abs();
 
         let r = integer_to_scalar(u_lo);
-        let R = &r * RISTRETTO_BASEPOINT_TABLE;
-        let V = &integer_to_scalar(v) * RISTRETTO_BASEPOINT_TABLE;
+        let R = &r * ED25519_BASEPOINT_TABLE;
+        let V = &integer_to_scalar(v) * ED25519_BASEPOINT_TABLE;
 
         hasher = Shake128::default();
         hasher.update(b"1");
@@ -129,7 +130,7 @@ impl Prover {
 
 impl Verifier {
     #[allow(non_snake_case)]
-    pub fn verify(&self, msg: &[u8], proof: Proof) -> Result<RistrettoPoint, InvalidProof> {
+    pub fn verify(&self, msg: &[u8], proof: Proof) -> Result<EdwardsPoint, InvalidProof> {
         let mut hasher = Shake128::default();
         hasher.update(b"0");
         hasher.update(msg);
@@ -145,12 +146,15 @@ impl Verifier {
         }
 
         let R = proof.R.decompress().ok_or(InvalidProof::InvalidCompressedPoint)?;
+        if !R.is_torsion_free() {
+            return Err(InvalidProof::NotOnPrimeOrderSubgroup);
+        }
 
         let s_inv = Integer::from(proof.s.invert_ref(&self.NV).unwrap());
         let t_check = mod_round(
             &(secure_pow_mod_pm(&self.g, &self.g_inv, &w_lo, &self.NV) *
               secure_pow_mod_pm(&s_inv, &proof.s, &self.Delta, &self.NV)), &self.NV).abs();
-        let V_check = &integer_to_scalar(w_lo) * RISTRETTO_BASEPOINT_TABLE - self.Delta_scalar * R;
+        let V_check = &integer_to_scalar(w_lo) * ED25519_BASEPOINT_TABLE - self.Delta_scalar * R;
 
         hasher = Shake128::default();
         hasher.update(b"1");
@@ -188,6 +192,7 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
     };
 
     assert!(eta < (Integer::from(1) << (ell / 2)));
+    assert!(&eta < &*CURVE_ORDER);
 
     let mut prf_key = [0u8; 16];
     rng.fill_bytes(&mut prf_key);
