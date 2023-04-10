@@ -130,9 +130,10 @@ mod tests {
     fn signing() {
         let mut rng = ChaCha20Rng::from_entropy();
         let (pk, signers) = keygen(&mut rng);
-        println!("Sampled key");
+        println!("Sampled key.");
         let message = b"Test message";
         let signature = sign_2party(signers, message);
-        assert!(pk.verify(message, &signature));
+        println!("Computed signature.");
+        assert!(pk.verify(b"Test message", &signature));
     }
 }

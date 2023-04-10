@@ -1,11 +1,12 @@
 use curve25519_dalek::constants::{BASEPOINT_ORDER, RISTRETTO_BASEPOINT_TABLE};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
+use num_traits::sign::Signed;
 use once_cell::sync::Lazy;
 use rand::{CryptoRng, RngCore};
 use rug::{Complete, Integer, integer::Order, ops::RemRounding};
 use sha3::{Shake128, digest::{ExtendableOutput, Update}};
-use subtle::ConstantTimeEq;
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::gen_prime::*;
 
@@ -21,6 +22,7 @@ static ETA_SCALE_FACTOR: Lazy<Integer> = Lazy::new(|| {
 #[allow(non_snake_case)]
 pub struct Prover {
     prf_key: [u8; 16],
+    kP: Integer,
     kP_pm1: Integer,
     kP_p: Integer,
     kP_qm1: Integer,
@@ -29,10 +31,12 @@ pub struct Prover {
     NP_sq: Integer,
     NP_p: Integer,
     NP_p_sq: Integer,
+    NP_p_inv_mod_q: Integer,
     NP_q: Integer,
     NP_q_sq: Integer,
-    NP_q_inv: Integer,
-    NP_q_sq_inv: Integer,
+    NP_q_inv_mod_p: Integer,
+    NP_q_sq_inv_mod_p: Integer,
+    NP_q_sq_inv_mod_p_sq: Integer,
     NV: Integer,
     g: Integer,
     g_inv: Integer,
@@ -47,6 +51,7 @@ pub struct Verifier {
     NP_sq: Integer,
     NV: Integer,
     g: Integer,
+    g_inv: Integer,
     Delta: Integer,
     Delta_scalar: Scalar,
     M_delta: Integer,
@@ -56,7 +61,7 @@ pub struct Verifier {
 #[allow(non_snake_case)]
 pub struct Proof {
     u_hi: Integer,
-    s_inv: Integer, // Send (s^(-1)) instead of s, as it makes it easier for the verifier.
+    s: Integer, // Send (s^(-1)) instead of s, as it makes it easier for the verifier.
     R: CompressedRistretto,
     hash_t_V: [u8; 32],
 }
@@ -84,17 +89,27 @@ impl Prover {
             pow_mod_p_sq(&base, &self.kP_pm1, &self.kP_p, &self.NP_p, &self.NP_p_sq);
         let (base_q_add, base_q_pow_mul, base_q_pow_add) =
             pow_mod_p_sq(&base, &self.kP_qm1, &self.kP_q, &self.NP_q, &self.NP_q_sq);
+        let base_add = crt_and_change_base(
+            base_p_add, base_q_add, &self.NP_p, &self.NP_q,
+            &self.NP_p_inv_mod_q, &self.NP_q_inv_mod_p, &self.NP_q_sq_inv_mod_p);
+        let base_pow_add = crt_and_change_base(
+            base_p_pow_add, base_q_pow_add, &self.NP_p, &self.NP_q,
+            &self.NP_p_inv_mod_q, &self.NP_q_inv_mod_p, &self.NP_q_sq_inv_mod_p);
         let base_pow_mul = crt(base_p_pow_mul, base_q_pow_mul,
-                               &self.NP_p_sq, &self.NP_q_sq, &self.NP_q_sq_inv);
-        let base_pow_add = crt(base_p_pow_add, base_q_pow_add,
-                               &self.NP_p, &self.NP_q, &self.NP_q_inv);
+                               &self.NP_p_sq, &self.NP_q_sq, &self.NP_q_sq_inv_mod_p_sq);
 
-        let u = mod_round(&crt(base_p_add, base_q_add, &self.NP_p, &self.NP_q, &self.NP_q_inv), &self.NP);
+        let u = mod_round(&base_add, &self.NP);
         let v = mod_round(&(dist(base_pow_mul, &self.NP) + base_pow_add + offset), &self.NP);
-        let (u_hi, u_lo) = u.div_rem_round_ref(&self.M).complete();
 
-        let s_inv = self.g_inv.secure_pow_mod_ref(&u_lo, &self.NV).complete();
-        let t = mod_round(&self.g.secure_pow_mod_ref(&v, &self.NV).complete(), &self.NV).abs();
+        // Simpler, non-CRT implementation:
+        //let phi: Integer = (&self.NP_p - Integer::from(1)) * (&self.NP_q - Integer::from(1));
+        //let d = &phi * Integer::from(phi.invert_ref(&self.NP).unwrap());
+        //let u = mod_round(&dist(base.clone().secure_pow_mod(&d, &self.NP_sq), &self.NP), &self.NP);
+        //let v = mod_round(&(dist(base.secure_pow_mod(&self.kP, &self.NP_sq), &self.NP) + offset), &self.NP);
+
+        let (u_hi, u_lo) = u.div_rem_round_ref(&self.M).complete();
+        let s = secure_pow_mod_pm(&self.g, &self.g_inv, &u_lo, &self.NV);
+        let t = mod_round(&secure_pow_mod_pm(&self.g, &self.g_inv, &v, &self.NV), &self.NV).abs();
 
         let r = integer_to_scalar(u_lo);
         let R = &r * RISTRETTO_BASEPOINT_TABLE;
@@ -108,7 +123,7 @@ impl Prover {
         let mut hash_t_V = [0u8; 32];
         hasher.finalize_xof_into(&mut hash_t_V);
 
-        (r, R, Proof { u_hi, s_inv, R: R.compress(), hash_t_V })
+        (r, R, Proof { u_hi, s, R: R.compress(), hash_t_V })
     }
 }
 
@@ -131,9 +146,10 @@ impl Verifier {
 
         let R = proof.R.decompress().ok_or(InvalidProof::InvalidCompressedPoint)?;
 
+        let s_inv = Integer::from(proof.s.invert_ref(&self.NV).unwrap());
         let t_check = mod_round(
-            &(self.g.secure_pow_mod_ref(&w_lo, &self.NV).complete() *
-            proof.s_inv.secure_pow_mod(&self.Delta, &self.NV)), &self.NV).abs();
+            &(secure_pow_mod_pm(&self.g, &self.g_inv, &w_lo, &self.NV) *
+              secure_pow_mod_pm(&s_inv, &proof.s, &self.Delta, &self.NV)), &self.NV).abs();
         let V_check = &integer_to_scalar(w_lo) * RISTRETTO_BASEPOINT_TABLE - self.Delta_scalar * R;
 
         hasher = Shake128::default();
@@ -184,8 +200,10 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
     let NP = (&NP_p * &NP_q).complete();
     let NP_sq = (&NP_p_sq * &NP_q_sq).complete();
 
-    let NP_q_inv = Integer::from(NP_q.invert_ref(&NP_p).unwrap());
-    let NP_q_sq_inv = Integer::from(NP_q_sq.invert_ref(&NP_p_sq).unwrap());
+    let NP_p_inv_mod_q = Integer::from(NP_p.invert_ref(&NP_q).unwrap());
+    let NP_q_inv_mod_p = Integer::from(NP_q.invert_ref(&NP_p).unwrap());
+    let NP_q_sq_inv_mod_p_sq = Integer::from(NP_q_sq.invert_ref(&NP_p_sq).unwrap());
+    let NP_q_sq_inv_mod_p = (&NP_q_sq_inv_mod_p_sq % &NP_p).complete();
 
     let phi: Integer = (&NP_p - Integer::from(1)) * (&NP_q - Integer::from(1));
     let d = &phi * Integer::from(phi.invert_ref(&NP).unwrap());
@@ -205,6 +223,7 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
     (
         Prover {
             prf_key,
+            kP: kP.clone(),
             kP_pm1: &kP % (&NP_p - Integer::from(1)),
             kP_p: (&kP % &NP_p).complete(),
             kP_qm1: &kP % (&NP_q - Integer::from(1)),
@@ -213,13 +232,15 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
             NP_sq: NP_sq.clone(),
             NP_p,
             NP_p_sq,
+            NP_p_inv_mod_q,
             NP_q,
             NP_q_sq,
-            NP_q_inv,
-            NP_q_sq_inv,
+            NP_q_inv_mod_p,
+            NP_q_sq_inv_mod_p,
+            NP_q_sq_inv_mod_p_sq,
             NV: NV.clone(),
             g: g.clone(),
-            g_inv,
+            g_inv: g_inv.clone(),
             M: M.clone(),
         },
         Verifier {
@@ -231,10 +252,33 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
             NP_sq,
             NV,
             g,
+            g_inv,
             Delta: Delta.clone(),
             Delta_scalar: integer_to_scalar(Delta),
         }
     )
+}
+
+fn secure_pow_mod_pm(x: &Integer, x_inv: &Integer, y: &Integer, modulus: &Integer) -> Integer {
+    // Variable time version:
+    //return Integer::from(x.pow_mod_ref(y, modulus).unwrap());
+
+    let neg = Choice::from(y.is_negative() as u8);
+    let y = y.abs();
+
+    // Serialize and unserialize, as I'm not sure how to do this directly one the integer.
+    let num_bytes = ((modulus.significant_bits() + 128 + 7) / 8) as usize;
+    let mut x_bytes = vec![0u8; num_bytes];
+    let mut x_inv_bytes = vec![0u8; num_bytes];
+    x.write_digits(&mut x_bytes, Order::Lsf);
+    x_inv.write_digits(&mut x_inv_bytes, Order::Lsf);
+
+    for i in 0..num_bytes {
+        u8::conditional_swap(&mut x_bytes[i], &mut x_inv_bytes[i], neg);
+    }
+
+    let x_sel = Integer::from_digits(&x_bytes, Order::Lsf);
+    x_sel.secure_pow_mod(&y, modulus)
 }
 
 // Decomposes x into 2 subgroups (multiplication mod p, addition mod p), then does the
@@ -252,8 +296,19 @@ fn pow_mod_p_sq(x: &Integer, y_pm1: &Integer, y_p: &Integer, p: &Integer, p_sq: 
     (x_add, x_pow_mul, x_pow_add)
 }
 
-fn crt(mod_p: Integer, mod_q: Integer, p: &Integer, q: &Integer, q_inv: &Integer) -> Integer {
-    let h = (q_inv * (mod_p - &mod_q)).rem_floor(p);
+fn crt(mod_p: Integer, mod_q: Integer, p: &Integer, q: &Integer, q_inv_mod_p: &Integer) -> Integer {
+    let h = (q_inv_mod_p * (mod_p - &mod_q)).rem_floor(p);
+    mod_q + q * h
+}
+
+// Need to change from (1 + p) and (1 + q) as bases to (1 + p*q) as the base.
+fn crt_and_change_base(
+    mod_p: Integer, mod_q: Integer,
+    p: &Integer, q: &Integer,
+    p_inv_mod_q: &Integer, q_inv_mod_p: &Integer, q_sq_inv_mod_p: &Integer)
+-> Integer {
+    let mod_q = (mod_q * p_inv_mod_q).rem_floor(q);
+    let h = (q_sq_inv_mod_p * mod_p - q_inv_mod_p * &mod_q).rem_floor(p);
     mod_q + q * h
 }
 
