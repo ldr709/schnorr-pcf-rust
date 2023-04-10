@@ -3,9 +3,11 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use once_cell::sync::Lazy;
 use rand::{CryptoRng, RngCore};
-use rug::{Complete, Integer, integer::{Order, IsPrime}, ops::RemRounding};
+use rug::{Complete, Integer, integer::Order, ops::RemRounding};
 use sha3::{Shake128, digest::{ExtendableOutput, Update}};
 use subtle::ConstantTimeEq;
+
+use crate::gen_prime::*;
 
 static CURVE_ORDER: Lazy<Integer> = Lazy::new(|| {
     Integer::from_digits(BASEPOINT_ORDER.as_bytes(), Order::Lsf)
@@ -47,7 +49,6 @@ pub struct Verifier {
     g: Integer,
     Delta: Integer,
     Delta_scalar: Scalar,
-    M: Integer,
     M_delta: Integer,
     u_hi_lim: Integer,
 }
@@ -60,6 +61,7 @@ pub struct Proof {
     hash_t_V: [u8; 32],
 }
 
+#[derive(Debug)]
 pub enum InvalidProof {
     InvalidCompressedPoint,
     OutOfRange,
@@ -95,8 +97,8 @@ impl Prover {
         let t = mod_round(&self.g.secure_pow_mod_ref(&v, &self.NV).complete(), &self.NV).abs();
 
         let r = integer_to_scalar(u_lo);
-        let R = &r * &RISTRETTO_BASEPOINT_TABLE;
-        let V = &integer_to_scalar(v) * &RISTRETTO_BASEPOINT_TABLE;
+        let R = &r * RISTRETTO_BASEPOINT_TABLE;
+        let V = &integer_to_scalar(v) * RISTRETTO_BASEPOINT_TABLE;
 
         hasher = Shake128::default();
         hasher.update(b"1");
@@ -132,7 +134,7 @@ impl Verifier {
         let t_check = mod_round(
             &(self.g.secure_pow_mod_ref(&w_lo, &self.NV).complete() *
             proof.s_inv.secure_pow_mod(&self.Delta, &self.NV)), &self.NV).abs();
-        let V_check = &integer_to_scalar(w_lo) * &RISTRETTO_BASEPOINT_TABLE - self.Delta_scalar * R;
+        let V_check = &integer_to_scalar(w_lo) * RISTRETTO_BASEPOINT_TABLE - self.Delta_scalar * R;
 
         hasher = Shake128::default();
         hasher.update(b"1");
@@ -222,7 +224,7 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
         },
         Verifier {
             u_hi_lim: &NP / (Integer::from(2) * &M),
-            M_delta: (&M * &Delta).complete(),
+            M_delta: M * &Delta,
             prf_key,
             kV,
             NP,
@@ -231,7 +233,6 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
             g,
             Delta: Delta.clone(),
             Delta_scalar: integer_to_scalar(Delta),
-            M,
         }
     )
 }
@@ -266,40 +267,6 @@ fn sample_mod<R: RngCore + CryptoRng>(rng: &mut R, modulus: &Integer) -> Integer
     let mut bytes = vec![0u8; num_bytes];
     rng.fill_bytes(&mut bytes);
     Integer::from_digits(&bytes, Order::Lsf) % modulus
-}
-
-// Sample an integer from [0, 2**n). If exact_bits == true, sample from [2**(n-1), 2**n) instead.
-fn sample_bits<R: RngCore + CryptoRng>(rng: &mut R, bits: usize, exact_bits: bool) -> Integer {
-    let num_bytes = (bits + 7) / 8;
-    let mut bytes = vec![0u8; num_bytes];
-    rng.fill_bytes(&mut bytes);
-
-    let high_bit = 1 << (((bits + 7) % 8) as u8);
-    bytes[num_bytes - 1] &= high_bit + (high_bit - 1);
-    if exact_bits {
-        bytes[num_bytes - 1] |= high_bit;
-    }
-
-    Integer::from_digits(&bytes, Order::Lsf)
-}
-
-fn gen_prime<R: RngCore + CryptoRng>(rng: &mut R, num_bits: usize) -> Integer {
-    loop {
-        let p = sample_bits(rng, num_bits, true);
-        if p.is_probably_prime(40) != IsPrime::No {
-            return p;
-        }
-    }
-}
-
-fn gen_safe_prime<R: RngCore + CryptoRng>(rng: &mut R, num_bits: usize) -> Integer {
-    loop {
-        let p_half = gen_prime(rng, num_bits - 1);
-        let p: Integer = 2 * p_half + 1;
-        if p.is_probably_prime(40) != IsPrime::No {
-            return p;
-        }
-    }
 }
 
 fn hash_integer<Hasher: Update>(hasher: &mut Hasher, x: &Integer, bound: &Integer) {

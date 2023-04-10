@@ -6,14 +6,26 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-curve25519-dalek = "3"
+arrayvec = "^0.7.2"
+curve25519-dalek = { version = "^4.0.0-rc.2", features = ["rand_core"] }
+once_cell = "1.17"
 rand = "0.8.5"
+rand_chacha = "0.3.1"
+rug = { version = "1.19", default-features = false, features = ["integer"] }
 sha2 = "0.10"
 sha3 = "0.10"
 subtle = "2.5"
-once_cell = "1.17"
 
-[dependencies.rug]
-version = "1.19"
-default-features = false
-features = ["integer"]
+[build-dependencies]
+cc = "1.0"
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports"] }
+
+[[bench]]
+name = "signing"
+harness = false
+
+[profile.release]
+opt-level = 3
+debug = true
