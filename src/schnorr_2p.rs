@@ -122,7 +122,7 @@ pub fn combine_signature_shares(shares: &[SignatureShare; 2]) -> Signature {
     }
 }
 
-pub fn sign_2party(parties: [Signer; 2], msg: &[u8]) -> Signature {
+pub fn sign_2party(parties: &[Signer; 2], msg: &[u8]) -> Signature {
     let (round1_msgs, round1_states): (ArrayVec<_, 2>, ArrayVec<_, 2>) = parties.iter().map(|p| {
         p.round1(msg)
     }).unzip();
@@ -145,7 +145,7 @@ mod tests {
         let (pk, signers) = keygen(&mut rng);
         println!("Sampled key.");
         let message = b"Test message";
-        let signature = sign_2party(signers, message);
+        let signature = sign_2party(&signers, message);
         println!("Computed signature.");
 
         assert!(pk.verify(message, &signature));

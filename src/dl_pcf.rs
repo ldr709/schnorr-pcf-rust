@@ -22,7 +22,7 @@ static ETA_SCALE_FACTOR: Lazy<Integer> = Lazy::new(|| {
 #[allow(non_snake_case)]
 pub struct Prover {
     prf_key: [u8; 16],
-    kP: Integer,
+    //kP: Integer,
     kP_pm1: Integer,
     kP_p: Integer,
     kP_qm1: Integer,
@@ -59,6 +59,7 @@ pub struct Verifier {
 }
 
 #[allow(non_snake_case)]
+#[derive(Clone, Debug)]
 pub struct Proof {
     u_hi: Integer,
     s: Integer, // Send (s^(-1)) instead of s, as it makes it easier for the verifier.
@@ -228,7 +229,7 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
     (
         Prover {
             prf_key,
-            kP: kP.clone(),
+            //kP: kP.clone(),
             kP_pm1: &kP % (&NP_p - Integer::from(1)),
             kP_p: (&kP % &NP_p).complete(),
             kP_qm1: &kP % (&NP_q - Integer::from(1)),
