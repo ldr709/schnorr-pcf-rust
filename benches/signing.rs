@@ -34,7 +34,7 @@ pub fn benchmark_dl_pcf(c: &mut Criterion) {
 
     let (_pk, signers) = keygen(&mut rng);
     c.bench_function("2-party Schnorr", |b| b.iter_with_large_drop(||
-        sign_2party(&signers, msg)));
+        sign_2party(&signers, msg, false)));
 }
 
 criterion_group!(benches, benchmark_dl_pcf);

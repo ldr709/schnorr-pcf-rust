@@ -6,6 +6,7 @@ use once_cell::sync::Lazy;
 use rand::{CryptoRng, RngCore};
 use rug::{Complete, Integer, integer::Order, ops::RemRounding};
 use sha3::{Shake128, digest::{ExtendableOutput, Update}};
+use std::mem::size_of_val;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::gen_prime::*;
@@ -172,6 +173,14 @@ impl Verifier {
     }
 }
 
+impl Proof {
+    pub fn size(&self) -> usize {
+        let mut size = size_of_val(self) - size_of_val(&self.u_hi) - size_of_val(&self.s);
+        size += (self.u_hi.significant_bits() + 1 + self.s.significant_bits() + 1 + 7) as usize / 8;
+        size
+    }
+}
+
 #[allow(non_snake_case)]
 pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifier) {
     // Choose parameters.
@@ -191,6 +200,7 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
             }
         }
     };
+    println!("ell' = {}, eta = {}", ell_prime, eta);
 
     assert!(eta < (Integer::from(1) << (ell / 2)));
     assert!(&eta < &*CURVE_ORDER);

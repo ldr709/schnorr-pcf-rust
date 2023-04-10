@@ -6,6 +6,7 @@ use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{SignatureError, VerifyingKey};
 use rand::{CryptoRng, RngCore};
 use sha2::{Sha512, digest::Digest};
+use std::mem::size_of_val;
 
 use crate::dl_pcf::*;
 
@@ -122,14 +123,24 @@ pub fn combine_signature_shares(shares: &[SignatureShare; 2]) -> Signature {
     }
 }
 
-pub fn sign_2party(parties: &[Signer; 2], msg: &[u8]) -> Signature {
+pub fn sign_2party(parties: &[Signer; 2], msg: &[u8], print_comm: bool) -> Signature {
+    let mut comm_bytes = 0usize;
     let (round1_msgs, round1_states): (ArrayVec<_, 2>, ArrayVec<_, 2>) = parties.iter().map(|p| {
         p.round1(msg)
     }).unzip();
+
     let sig_shares: ArrayVec<_, 2> = round1_states.iter().zip(round1_msgs.into_iter().rev())
     .map(|(s, m)| {
-        s.round2(m).unwrap()
+        comm_bytes += m.0.size();
+        let m2 = s.round2(m).unwrap();
+        comm_bytes += size_of_val(&m2.0.s);
+        m2
     }).collect();
+
+    if print_comm {
+        println!("Signing communication total: {} bytes.", comm_bytes);
+    }
+
     combine_signature_shares(&sig_shares.into_inner().ok().unwrap())
 }
 
@@ -145,7 +156,7 @@ mod tests {
         let (pk, signers) = keygen(&mut rng);
         println!("Sampled key.");
         let message = b"Test message";
-        let signature = sign_2party(&signers, message);
+        let signature = sign_2party(&signers, message, true);
         println!("Computed signature.");
 
         assert!(pk.verify(message, &signature));
