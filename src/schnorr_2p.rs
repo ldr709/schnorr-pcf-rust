@@ -3,6 +3,7 @@ use core::mem::swap;
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
 use curve25519_dalek::scalar::Scalar;
+use ed25519_dalek::{SignatureError, VerifyingKey};
 use rand::{CryptoRng, RngCore};
 use sha2::{Sha512, digest::Digest};
 
@@ -29,6 +30,7 @@ pub struct SignerState<'a> {
 }
 
 #[allow(non_snake_case)]
+#[derive(Copy, Clone)]
 pub struct Signature {
     s: Scalar,
     R: CompressedEdwardsY,
@@ -48,6 +50,19 @@ impl PubKey {
             &-h, &self.0.decompress().unwrap(), &sig.s);
 
         R_verify.compress() == sig.R
+    }
+}
+
+impl TryFrom<PubKey> for VerifyingKey {
+    type Error = SignatureError;
+    fn try_from(pk: PubKey) -> Result<Self, Self::Error> {
+        VerifyingKey::from_bytes(&pk.0.to_bytes())
+    }
+}
+
+impl From<Signature> for ed25519_dalek::Signature {
+    fn from(sig: Signature) -> Self {
+        ed25519_dalek::Signature::from_components(sig.R.to_bytes(), sig.s.to_bytes())
     }
 }
 
@@ -132,6 +147,10 @@ mod tests {
         let message = b"Test message";
         let signature = sign_2party(signers, message);
         println!("Computed signature.");
-        assert!(pk.verify(b"Test message", &signature));
+
+        assert!(pk.verify(message, &signature));
+
+        let dalek_pk = VerifyingKey::try_from(pk).unwrap();
+        dalek_pk.verify_strict(message, &signature.into()).unwrap();
     }
 }
