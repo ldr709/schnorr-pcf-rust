@@ -51,8 +51,10 @@ pub struct Verifier {
     NP: Integer,
     NP_sq: Integer,
     NV: Integer,
+    NV_p: Integer,
+    NV_q: Integer,
+    NV_q_inv_mod_p: Integer,
     g: Integer,
-    g_inv: Integer,
     Delta: Integer,
     Delta_scalar: Scalar,
     M_delta: Integer,
@@ -152,10 +154,11 @@ impl Verifier {
             return Err(InvalidProof::NotOnPrimeOrderSubgroup);
         }
 
-        let s_inv = Integer::from(proof.s.invert_ref(&self.NV).unwrap());
-        let t_check = mod_round(
-            &(secure_pow_mod_pm(&self.g, &self.g_inv, &w_lo, &self.NV) *
-              secure_pow_mod_pm(&s_inv, &proof.s, &self.Delta, &self.NV)), &self.NV).abs();
+        let t_check_p = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.NV_p);
+        let t_check_q = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.NV_q);
+        let t_check =
+            mod_round(&crt(t_check_p, t_check_q, &self.NV_p, &self.NV_q, &self.NV_q_inv_mod_p),
+                      &self.NV).abs();
         let V_check = &integer_to_scalar(w_lo) * ED25519_BASEPOINT_TABLE - self.Delta_scalar * R;
 
         hasher = Shake128::default();
@@ -170,6 +173,15 @@ impl Verifier {
         }
 
         Ok(R)
+    }
+
+    fn compute_t_check_mod_p(&self, s: &Integer, w_lo: &Integer, p: &Integer) -> Integer {
+        let s = Integer::from(s.rem_floor(p));
+        let s_inv_p = Integer::from(s.invert_ref(p).unwrap());
+        let t_check_p =
+            self.g.secure_pow_mod_ref(&w_lo.rem_floor(p - Integer::from(1)), p).complete() *
+            secure_pow_mod_pm(&s_inv_p, &s, &self.Delta, p);
+        t_check_p.rem_floor(p)
     }
 }
 
@@ -231,7 +243,8 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
 
     let NV_p = gen_safe_prime(rng, ell / 2);
     let NV_q = gen_safe_prime(rng, ell / 2);
-    let NV = NV_p * NV_q;
+    let NV = (&NV_p * &NV_q).complete();
+    let NV_q_inv_mod_p = Integer::from(NV_q.invert_ref(&NV_p).unwrap());
     let g = sample_mod(rng, &NV);
     let g_inv = Integer::from(g.invert_ref(&NV).unwrap());
     let M = (&*CURVE_ORDER * &NV).complete();
@@ -267,8 +280,10 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
             NP,
             NP_sq,
             NV,
+            NV_p,
+            NV_q,
+            NV_q_inv_mod_p,
             g,
-            g_inv,
             Delta: Delta.clone(),
             Delta_scalar: integer_to_scalar(Delta),
         }
