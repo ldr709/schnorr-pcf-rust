@@ -20,6 +20,12 @@ static ETA_SCALE_FACTOR: Lazy<Integer> = Lazy::new(|| {
     Integer::parse("471731526451026588275888285528308968799").unwrap().complete()
 });
 
+static ED25519_COFACATOR: Lazy<Scalar> = Lazy::new(|| {
+    // 8
+    Scalar::ONE + Scalar::ONE + Scalar::ONE + Scalar::ONE +
+    Scalar::ONE + Scalar::ONE + Scalar::ONE + Scalar::ONE
+});
+
 #[allow(non_snake_case)]
 pub struct Prover {
     prf_key: [u8; 16],
@@ -73,7 +79,6 @@ pub struct Proof {
 #[derive(Debug)]
 pub enum InvalidProof {
     InvalidCompressedPoint,
-    NotOnPrimeOrderSubgroup,
     OutOfRange,
     FailedConsistencyCheck,
 }
@@ -118,7 +123,7 @@ impl Prover {
 
         let r = integer_to_scalar(u_lo);
         let R = &r * ED25519_BASEPOINT_TABLE;
-        let V = &integer_to_scalar(v) * ED25519_BASEPOINT_TABLE;
+        let V = &(*ED25519_COFACATOR * integer_to_scalar(v)) * ED25519_BASEPOINT_TABLE;
 
         hasher = Shake128::default();
         hasher.update(b"1");
@@ -128,7 +133,7 @@ impl Prover {
         let mut hash_t_V = [0u8; 32];
         hasher.finalize_xof_into(&mut hash_t_V);
 
-        (r, R, Proof { u_hi, s, R: R.compress(), hash_t_V })
+        (*ED25519_COFACATOR * r, R.mul_by_cofactor(), Proof { u_hi, s, R: R.compress(), hash_t_V })
     }
 }
 
@@ -150,16 +155,15 @@ impl Verifier {
         }
 
         let R = proof.R.decompress().ok_or(InvalidProof::InvalidCompressedPoint)?;
-        if !R.is_torsion_free() {
-            return Err(InvalidProof::NotOnPrimeOrderSubgroup);
-        }
+        let R = R.mul_by_cofactor();
 
         let t_check_p = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.NV_p);
         let t_check_q = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.NV_q);
         let t_check =
             mod_round(&crt(t_check_p, t_check_q, &self.NV_p, &self.NV_q, &self.NV_q_inv_mod_p),
                       &self.NV).abs();
-        let V_check = &integer_to_scalar(w_lo) * ED25519_BASEPOINT_TABLE - self.Delta_scalar * R;
+        let V_check = &(*ED25519_COFACATOR * integer_to_scalar(w_lo)) * ED25519_BASEPOINT_TABLE
+                    - self.Delta_scalar * R;
 
         hasher = Shake128::default();
         hasher.update(b"1");
