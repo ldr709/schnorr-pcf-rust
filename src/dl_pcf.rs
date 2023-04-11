@@ -55,7 +55,8 @@ pub struct Verifier {
     NV_q: Integer,
     NV_q_inv_mod_p: Integer,
     g: Integer,
-    Delta: Integer,
+    minusDelta_pm1: Integer,
+    minusDelta_qm1: Integer,
     Delta_scalar: Scalar,
     M_delta: Integer,
     u_hi_lim: Integer,
@@ -154,8 +155,8 @@ impl Verifier {
             return Err(InvalidProof::NotOnPrimeOrderSubgroup);
         }
 
-        let t_check_p = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.NV_p);
-        let t_check_q = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.NV_q);
+        let t_check_p = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.minusDelta_pm1, &self.NV_p);
+        let t_check_q = self.compute_t_check_mod_p(&proof.s, &w_lo, &self.minusDelta_qm1, &self.NV_q);
         let t_check =
             mod_round(&crt(t_check_p, t_check_q, &self.NV_p, &self.NV_q, &self.NV_q_inv_mod_p),
                       &self.NV).abs();
@@ -175,12 +176,12 @@ impl Verifier {
         Ok(R)
     }
 
-    fn compute_t_check_mod_p(&self, s: &Integer, w_lo: &Integer, p: &Integer) -> Integer {
-        let s = Integer::from(s.rem_floor(p));
-        let s_inv_p = Integer::from(s.invert_ref(p).unwrap());
+    #[allow(non_snake_case)]
+    fn compute_t_check_mod_p(&self, s: &Integer, w_lo: &Integer, minusDelta: &Integer, p: &Integer)
+        -> Integer {
         let t_check_p =
             self.g.secure_pow_mod_ref(&w_lo.rem_floor(p - Integer::from(1)), p).complete() *
-            secure_pow_mod_pm(&s_inv_p, &s, &self.Delta, p);
+            s.secure_pow_mod_ref(minusDelta, p).complete();
         t_check_p.rem_floor(p)
     }
 }
@@ -275,6 +276,9 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
         Verifier {
             u_hi_lim: &NP / (Integer::from(2) * &M),
             M_delta: M * &Delta,
+            minusDelta_pm1: (-&Delta).complete().rem_floor(&NV_p - Integer::from(1)),
+            minusDelta_qm1: (-&Delta).complete().rem_floor(&NV_q - Integer::from(1)),
+            Delta_scalar: integer_to_scalar(Delta),
             prf_key,
             kV,
             NP,
@@ -284,8 +288,6 @@ pub fn setup<R: RngCore + CryptoRng>(rng: &mut R, ell: usize) -> (Prover, Verifi
             NV_q,
             NV_q_inv_mod_p,
             g,
-            Delta: Delta.clone(),
-            Delta_scalar: integer_to_scalar(Delta),
         }
     )
 }
